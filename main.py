@@ -223,14 +223,10 @@ async def get_live_status(interaction: discord.Interaction, game: str):
         return
     
     try:
-        await interaction.response.defer()
-
-        if not game_status_cache:
-            await update_game_status_cache()
-
-        message = await interaction.followup.send(build_status_message(game), wait=True)
+        message = await interaction.channel.send(build_status_message(game))
         live_status_messages[message.id] = {"message": message, "game": game}
 
+        await interaction.response.send_message("Live status created", ephemeral=True)
     except Exception as e:
         print(f"Live status error: {e}")
         await interaction.followup.send("Failed to create live status.", ephemeral=True)
