@@ -5,8 +5,6 @@ import logging
 from dotenv import load_dotenv
 import os
 import aiohttp
-import time
-import asyncio
 
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -17,20 +15,31 @@ handler = logging.FileHandler(filename="discord.log", encoding="utf-8", mode="w"
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="/", intents=intents)
 
+http_session = None
 games_cache = []
 game_status_cache = {}
 live_status_messages = {}
-GAME_EMOJIS = {
-    "battle_box_arena": 1539777268388331581,
-    "battle_box_quads": 1539777319978278942,
-    "dynaball": 1539777244468084867,
-    "hole_in_the_wall": 1539777355743236116,
-    "parkour_warrior_survival": 1539777370590814278,
-    "rocket_spleef": 1539777391499546716,
-    "sky_battle_quads": 1539777289372569750,
-    "sky_battle_solos": 1539779001609093191,
-    "tgttos": 1539777338168971315,
+GAME_DETAILS = {
+    "battle_box_arena": {"name": "Battle Box Arena", "emoji": 1539777268388331581},
+    "battle_box_quads": {"name": "Battle Box", "emoji": 1539777319978278942},
+    "dynaball": {"name": "Dynaball", "emoji": 1539777244468084867},
+    "hole_in_the_wall": {"name": "Hole In The Wall", "emoji": 1539777355743236116},
+    "parkour_warrior_survival": {"name": "Parkour Warrior Survivor", "emoji": 1539777370590814278},
+    "rocket_spleef": {"name": "Rocket Spleef Rush", "emoji": 1539777391499546716},
+    "sky_battle_quads": {"name": "Sky Battle", "emoji": 1539777289372569750},
+    "sky_battle_solos": {"name": "Sky Battle Solo", "emoji": 1539779001609093191},
+    "tgttos": {"name": "TGTTOS", "emoji": 1539777338168971315}
 }
+
+class Bot(commands.Bot):
+    async def setup_hook(self):
+        self.http_session = aiohttp.ClientSession()
+
+    async def close(self):
+        await self.http_session.close()
+        await super().close()
+
+bot = Bot(command_prefix="/", intents=intents)
 
 @bot.event
 async def on_ready():
@@ -64,8 +73,7 @@ async def mcci_query(query: str, variables: dict | None = None):
     headers = {"X-API-Key": MCC_API_KEY, "Content-Type": "application/json"}
     payload = {"query": query, "variables": variables or {}}
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(MCC_API_URL, json=payload, headers=headers) as response:
+    async with bot.http_session.post(MCC_API_URL, json=payload, headers=headers) as response:
             data = await response.json()
 
             if response.status != 200:
@@ -108,10 +116,10 @@ async def update_game_status_cache():
         print(f"Failed to update game status cache: {error}")
 
 def format_game_status(game: str, data: dict) -> str:
-    game_name = game.replace("_", " ").title()
+    game_name = GAME_DETAILS[game]["name"]
+    emoji = bot.get_emoji(GAME_DETAILS[game]["emoji"])
     player_count = data["playerCount"]
 
-    emoji = bot.get_emoji(GAME_EMOJIS.get(game))
     return f"{emoji} **{game_name}**\n Players: **{player_count}**\n Game Status: **{data['popularity']}**"
 
 def build_status_message(game: str) -> str:
@@ -142,10 +150,10 @@ async def autocomplete(interaction: discord.Interaction, current: str) -> list[a
 
     filtered_games = [game for game in games_cache if current in game.lower()]
 
-    choices.extend(app_commands.Choice(name=game.replace("_", " ").title(), value=game) for game in filtered_games)
+    choices.extend(app_commands.Choice(name=f"{GAME_DETAILS[game]['name']}", value=game) for game in filtered_games)
     return choices[:25]
 
-@tasks.loop(seconds=30)
+@tasks.loop(seconds=10)
 async def update_live_statuses():
     await update_game_status_cache()
 
