@@ -20,6 +20,17 @@ bot = commands.Bot(command_prefix="/", intents=intents)
 games_cache = []
 game_status_cache = {}
 live_status_messages = {}
+GAME_EMOJIS = {
+    "battle_box_arena": 1539777268388331581,
+    "battle_box_quads": 1539777319978278942,
+    "dynaball": 1539777244468084867,
+    "hole_in_the_wall": 1539777355743236116,
+    "parkour_warrior_survival": 1539777370590814278,
+    "rocket_spleef": 1539777391499546716,
+    "sky_battle_quads": 1539777289372569750,
+    "sky_battle_solos": 1539779001609093191,
+    "tgttos": 1539777338168971315,
+}
 
 @bot.event
 async def on_ready():
@@ -99,8 +110,9 @@ async def update_game_status_cache():
 def format_game_status(game: str, data: dict) -> str:
     game_name = game.replace("_", " ").title()
     player_count = data["playerCount"]
-    player_plural = "player" if player_count == 1 else "players"
-    return f"**{game_name}**\n Players: **{player_count} {player_plural}**\n Game Status: **{data['popularity']}**"
+
+    emoji = bot.get_emoji(GAME_EMOJIS.get(game))
+    return f"{emoji} **{game_name}**\n Players: **{player_count}**\n Game Status: **{data['popularity']}**"
 
 def build_status_message(game: str) -> str:
     status_parts = []
