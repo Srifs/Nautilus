@@ -5,13 +5,15 @@ import logging
 from dotenv import load_dotenv
 import os
 import aiohttp
+from logging.handlers import RotatingFileHandler
+
 
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 MCC_API_KEY = os.getenv("MCC_API_KEY")
 MCC_API_URL = "https://api.mccisland.net/graphql"
 
-handler = logging.FileHandler(filename="discord.log", encoding="utf-8", mode="w")
+handler = RotatingFileHandler("discord.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="/", intents=intents)
 
@@ -109,8 +111,6 @@ async def update_game_status_cache():
                 "playerCount": data[alias_name],
                 "popularity": data[f"{alias_name}_popularity"]
             }
-
-        print("Updated game status cache")
 
     except Exception as error:
         print(f"Failed to update game status cache: {error}")
@@ -231,4 +231,4 @@ async def get_live_status(interaction: discord.Interaction, game: str):
         print(f"Live status error: {e}")
         await interaction.followup.send("Failed to create live status.", ephemeral=True)
 
-bot.run(DISCORD_TOKEN, log_handler=handler, log_level=logging.DEBUG)
+bot.run(DISCORD_TOKEN, log_handler=handler, log_level=logging.INFO)
