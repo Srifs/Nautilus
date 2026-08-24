@@ -5,6 +5,9 @@ import logging
 from dotenv import load_dotenv
 import os
 import aiohttp
+import aiosqlite
+import sqlite3
+import time
 from logging.handlers import RotatingFileHandler
 
 
@@ -16,6 +19,8 @@ MCC_API_URL = "https://api.mccisland.net/graphql"
 handler = RotatingFileHandler("discord.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="/", intents=intents)
+
+DB_PATH = "bot.db"
 
 http_session = None
 games_cache = []
@@ -36,9 +41,109 @@ GAME_DETAILS = {
 class Bot(commands.Bot):
     async def setup_hook(self):
         self.http_session = aiohttp.ClientSession()
+        self.db = await aiosqlite.connect(DB_PATH)
+        await self.setup_database()
+
+    async def setup_database(self):
+        await self.db.execute("""
+            CREATE TABLE IF NOT EXISTS live_status_messages (
+                guild_id INTEGER PRIMARY KEY,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                game TEXT NOT NULL
+            )
+        """)
+
+        await self.db.execute("""
+            CREATE TABLE IF NOT EXISTS game_player_counts (
+                timestamp INTEGER NOT NULL,
+                game TEXT NOT NULL,
+                player_count INTEGER NOT NULL
+            )
+        """)
+
+        await self.db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_player_counts_game_timestamp
+            ON game_player_counts(game, timestamp)
+        """)
+
+        await self.db.commit()
+
+    async def add_game_player_records(self, db_records):
+        await self.db.executemany(
+            """
+            INSERT INTO game_player_counts
+            (timestamp, game, player_count)
+            VALUES (?, ?, ?)
+            """,
+            db_records
+        )
+
+        print("saved player count history")
+
+        await self.db.commit()
+
+    async def add_live_status_message(self, message_info_record):
+        await self.db.execute(
+            """
+            INSERT INTO live_status_messages
+            (guild_id, channel_id, message_id, game)
+            VALUES (?, ?, ?, ?)
+            """,
+            message_info_record
+        )
+
+        print("saved live message instance")
+
+        await self.db.commit()
+
+    async def delete_live_status_message(self, message_id):
+        await self.db.execute(
+            """
+            DELETE FROM live_status_messages
+            WHERE message_id = ?
+            """,
+            (message_id,)
+        )
+        await self.db.commit()
+
+    async def load_live_status_messages(self):
+        async with self.db.execute("SELECT guild_id, channel_id, message_id, game FROM live_status_messages") as cursor:
+            rows = await cursor.fetchall()
+
+        for guild_id, channel_id, message_id, game in rows:
+            channel = self.get_channel(channel_id)
+
+            if channel is None:
+                try:
+                    channel = await self.fetch_channel(channel_id)
+                except discord.NotFound:
+                    print(f"Channel {channel_id} no longer exists")
+                    continue
+                except discord.Forbidden:
+                    print(f"Cannot access channel {channel_id}")
+                    continue
+
+            try:
+                message = await channel.fetch_message(message_id)
+
+                live_status_messages[message_id] = {
+                    "message": message,
+                    "game": game
+                }
+
+            except discord.NotFound:
+                print(f"Live status message {message_id} no longer exists")
+                await bot.delete_live_status_message(message_id)
+
+            except discord.Forbidden:
+                print(f"Cannot access live status message {message_id}")
+
+        print(f"Loaded {len(live_status_messages)} live status messages")
 
     async def close(self):
         await self.http_session.close()
+        await self.db.close()
         await super().close()
 
 bot = Bot(command_prefix="/", intents=intents)
@@ -49,6 +154,7 @@ async def on_ready():
 
     try:
         await update_games()
+        await bot.load_live_status_messages()
 
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} command(s)")
@@ -60,13 +166,12 @@ async def on_ready():
         print(f"Failed to sync commands: {e}")
 
 async def update_games():
-    global games_cache, games_cache_time
+    global games_cache
     query = """query availableQueueTypes { availableQueueTypes }"""
 
     try:
         data = await mcci_query(query)
         games_cache = data["availableQueueTypes"]
-        print(f"Loaded game types: {games_cache}")
 
     except Exception as e:
         print(f"Failed to load game types: {e}")
@@ -104,13 +209,18 @@ async def update_game_status_cache():
 
     try:
         data = await mcci_query(query, variables)
+        game_player_count_records = []
+        timestamp = int(time.time())
 
         for index, game in enumerate(games_cache):
             alias_name = f"game{index}"
-            game_status_cache[game] = {
-                "playerCount": data[alias_name],
-                "popularity": data[f"{alias_name}_popularity"]
-            }
+            player_count = data[alias_name]
+            popularity = data[f"{alias_name}_popularity"]
+
+            game_status_cache[game] = {"playerCount": player_count,"popularity": popularity}
+            game_player_count_records.append((timestamp, str(game), int(player_count)))
+
+        await bot.add_game_player_records(game_player_count_records)
 
     except Exception as error:
         print(f"Failed to update game status cache: {error}")
@@ -136,7 +246,7 @@ def build_status_message(game: str) -> str:
     data = game_status_cache.get(game)
 
     if data is None:
-        return "No status data available."
+        return "No status data available"
     
     return format_game_status(game, data)
 
@@ -179,12 +289,12 @@ async def update_live_statuses():
             await message.edit(content=content)
 
         except discord.NotFound:
-            print(f"Live status message {message_id} was deleted.")
-            del live_status_messages[message_id]
+            print(f"Live status message {message_id} was deleted")
+            await bot.delete_live_status_message(message_id)
+            live_status_messages.pop(message_id, None)
 
         except discord.Forbidden:
-            print(f"No permission to edit live status message {message_id}.")
-            del live_status_messages[message_id]
+            print(f"No permission to edit live status message {message_id}")
 
         except Exception as e:
             print(f"Live status update error: {e}")
@@ -195,6 +305,14 @@ async def before_update_live_statuses():
 
 def is_valid_game(game: str) -> bool:
     return game == "all" or game in games_cache
+
+@bot.event
+async def on_raw_message_delete(payload: discord.RawMessageDeleteEvent):
+    message_id = payload.message_id
+
+    if message_id in live_status_messages:
+        live_status_messages.pop(message_id, None)
+        await bot.delete_live_status_message(message_id)
 
 @bot.tree.command(name="gamestatus", description="Get the player count and game status for a requested game")
 @app_commands.describe(game="The game to check, or 'all' to include every game")
@@ -211,7 +329,7 @@ async def get_game_status(interaction: discord.Interaction, game: str):
 
     except Exception as error:
         print(f"Game status error: {error}")
-        await interaction.followup.send("Failed to retrieve game status.",ephemeral=True)
+        await interaction.followup.send("Failed to retrieve game status",ephemeral=True)
 
 @bot.tree.command(name="livestatus", description="Get a permanent live updating player count and game status for a requested game")
 @app_commands.describe(game="The game to monitor, or 'all' to include every game")
@@ -219,16 +337,40 @@ async def get_game_status(interaction: discord.Interaction, game: str):
 
 async def get_live_status(interaction: discord.Interaction, game: str):
     if not is_valid_game(game):
-        await interaction.response.send_message("Invalid game type.", ephemeral=True)
+        await interaction.response.send_message("Invalid game type", ephemeral=True)
         return
+
+    message = None
     
     try:
         message = await interaction.channel.send(build_status_message(game))
         live_status_messages[message.id] = {"message": message, "game": game}
+        try:
+            await bot.add_live_status_message((message.guild.id, message.channel.id, message.id, game))
+
+        except sqlite3.IntegrityError:
+            live_status_messages.pop(message.id, None)
+
+            try:
+                await message.delete()
+            except discord.HTTPException:
+                pass
+
+            await interaction.response.send_message("Server already has live status message", ephemeral=True)
+            return
 
         await interaction.response.send_message("Live status created", ephemeral=True)
+
     except Exception as e:
         print(f"Live status error: {e}")
-        await interaction.followup.send("Failed to create live status.", ephemeral=True)
+
+        if "message" in locals():
+            try:
+                await message.delete()
+            except discord.HTTPException:
+                pass
+
+
+        await interaction.followup.send("Failed to create live status", ephemeral=True)
 
 bot.run(DISCORD_TOKEN, log_handler=handler, log_level=logging.INFO)
