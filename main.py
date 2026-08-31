@@ -81,6 +81,14 @@ class Bot(commands.Bot):
         async with self.db.execute("PRAGMA max_page_count") as cursor:
             print("Max page count:", await cursor.fetchone())
 
+        import shutil
+
+        total, used, free = shutil.disk_usage("/home/container")
+
+        print(f"Disk total: {total / 1024**3:.2f} GB")
+        print(f"Disk used:  {used / 1024**3:.2f} GB")
+        print(f"Disk free:  {free / 1024**3:.2f} GB")
+
 
     async def add_game_player_records(self, db_records):
         await self.db.executemany(
