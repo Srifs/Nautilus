@@ -69,6 +69,19 @@ class Bot(commands.Bot):
 
         await self.db.commit()
 
+        async with self.db.execute("PRAGMA journal_mode") as cursor:
+            print("Journal mode:", await cursor.fetchone())
+
+        async with self.db.execute("PRAGMA synchronous") as cursor:
+            print("Synchronous:", await cursor.fetchone())
+
+        async with self.db.execute("PRAGMA page_count") as cursor:
+            print("Page count:", await cursor.fetchone())
+
+        async with self.db.execute("PRAGMA max_page_count") as cursor:
+            print("Max page count:", await cursor.fetchone())
+
+
     async def add_game_player_records(self, db_records):
         await self.db.executemany(
             """
@@ -127,10 +140,7 @@ class Bot(commands.Bot):
             try:
                 message = await channel.fetch_message(message_id)
 
-                live_status_messages[message_id] = {
-                    "message": message,
-                    "game": game
-                }
+                live_status_messages[message_id] = {"message": message,"game": game}
 
             except discord.NotFound:
                 print(f"Live status message {message_id} no longer exists")
@@ -223,7 +233,7 @@ async def update_game_status_cache():
         await bot.add_game_player_records(game_player_count_records)
 
     except Exception as error:
-        print(f"Failed to update game status cache: {error}")
+        print(f"Failed to update game status cache")
 
 def format_game_status(game: str, data: dict) -> str:
     game_name = GAME_DETAILS[game]["name"]
